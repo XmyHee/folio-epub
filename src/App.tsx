@@ -61,9 +61,17 @@ export default function App() {
       setError("没有找到 EPUB 文件");
       return;
     }
+    const totalMb = Math.round(files.reduce((s, f) => s + f.size, 0) / (1024 * 1024));
+    if (totalMb > 400) {
+      setError(
+        "本次合计约 " +
+          totalMb +
+          " MB，浏览器可能内存不足。建议每次不超过 100～200 本，或先分文件夹导入。",
+      );
+    }
     revokeCovers(books);
     setBusy(true);
-    setError(null);
+    if (totalMb <= 400) setError(null);
     setBooks([]);
     setKeepOverrides({});
     setSelected(null);
@@ -74,8 +82,20 @@ export default function App() {
       });
       setBooks(parsed);
       setTab("audit");
+      const oomCount = parsed.filter((b) => b.error && /内存不足/.test(b.error)).length;
+      if (oomCount > 0) {
+        setError(
+          oomCount +
+            " 本因内存不足未能解析。请关闭其他标签页后分批导入，或先导出已成功的部分。",
+        );
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "解析失败");
+      const msg = err instanceof Error ? err.message : "解析失败";
+      setError(
+        /array buffer|内存|oom/i.test(msg)
+          ? "浏览器内存不足（Array buffer allocation failed）。请分批导入，每次少选一些书。"
+          : msg,
+      );
     } finally {
       setBusy(false);
       setProgress(null);

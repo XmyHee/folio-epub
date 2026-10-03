@@ -2,6 +2,11 @@ import JSZip from "jszip";
 import { hasZlibTag } from "./normalize";
 import type { ParsedBook } from "./types";
 
+/** Skip embedding covers larger than this (saves RAM on huge image assets) */
+const MAX_COVER_BYTES = 2 * 1024 * 1024;
+/** Soft per-file warning threshold */
+const LARGE_FILE_BYTES = 80 * 1024 * 1024;
+
 function uid(): string {
   return crypto.randomUUID();
 }
@@ -37,7 +42,7 @@ function dirname(path: string): string {
 function joinPath(base: string, rel: string): string {
   const cleaned = rel.replace(/\\/g, "/");
   if (!base) return cleaned.replace(/^\.\//, "");
-  const parts = `${base}/${cleaned}`.split("/");
+  const parts = (base + "/" + cleaned).split("/");
   const out: string[] = [];
   for (const p of parts) {
     if (!p || p === ".") continue;
@@ -112,6 +117,11 @@ function findCoverPath(opf: Document, opfDir: string, metas: Element[]): string 
   return null;
 }
 
+function isOomError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /array buffer allocation failed|out of memory|oom/i.test(msg);
+}
+
 export async function parseEpub(file: File): Promise<ParsedBook> {
   const id = uid();
   const originalName = file.name;
@@ -140,10 +150,17 @@ export async function parseEpub(file: File): Promise<ParsedBook> {
     hasZlibTag: zlib,
   };
 
+  let buffer: ArrayBuffer | null = null;
+
   try {
-    const buffer = await file.arrayBuffer();
+    // Single read — hash + unzip share the same buffer (avoids 2× RAM)
+    buffer = await file.arrayBuffer();
     base.hash = await sha256Hex(buffer);
+
     const zip = await JSZip.loadAsync(buffer);
+    // Allow GC of the raw buffer reference once JSZip has parsed central directory
+    buffer = null;
+
     const containerFile =
       zip.file("META-INF/container.xml") || zip.file("meta-inf/container.xml");
     if (!containerFile) throw new Error("缺少 META-INF/container.xml，不是标准 EPUB");
@@ -154,7 +171,7 @@ export async function parseEpub(file: File): Promise<ParsedBook> {
     if (!opfPath) throw new Error("container.xml 未声明 OPF 路径");
 
     const opfFile = zip.file(opfPath);
-    if (!opfFile) throw new Error(`找不到 OPF 文件: ${opfPath}`);
+    if (!opfFile) throw new Error("找不到 OPF 文件: " + opfPath);
     const opf = parseXml(await opfFile.async("string"));
     const opfDir = dirname(opfPath);
 
@@ -182,9 +199,16 @@ export async function parseEpub(file: File): Promise<ParsedBook> {
     if (coverPath) {
       const coverFile = zip.file(coverPath);
       if (coverFile) {
-        const blob = await coverFile.async("blob");
-        const typed = new Blob([blob], { type: guessImageType(coverPath, blob) });
-        base.coverUrl = URL.createObjectURL(typed);
+        // Avoid loading multi‑MB covers into memory as object URLs for every book
+        const approx = (coverFile as JSZip.JSZipObject & { _data?: { uncompressedSize?: number } })
+          ._data?.uncompressedSize;
+        if (approx == null || approx <= MAX_COVER_BYTES) {
+          const blob = await coverFile.async("blob");
+          if (blob.size <= MAX_COVER_BYTES) {
+            const typed = new Blob([blob], { type: guessImageType(coverPath, blob) });
+            base.coverUrl = URL.createObjectURL(typed);
+          }
+        }
       }
     }
 
@@ -194,30 +218,42 @@ export async function parseEpub(file: File): Promise<ParsedBook> {
     }
     return base;
   } catch (err) {
+    buffer = null;
     if (!base.hash) {
-      try {
-        base.hash = await sha256Hex(await file.arrayBuffer());
-      } catch {
-        base.hash = `fallback-${id}`;
-      }
+      base.hash = "fallback-" + id;
     }
+    const oom = isOomError(err);
     return {
       ...base,
       status: "error",
-      error: err instanceof Error ? err.message : "读取解析失败",
+      error: oom
+        ? "内存不足，无法解析此文件（请减少同时处理的数量，或分批导入）"
+        : err instanceof Error
+          ? err.message
+          : "读取解析失败",
     };
   }
+}
+
+/** Choose concurrency from library size to reduce peak RAM */
+export function suggestConcurrency(files: File[]): number {
+  const totalBytes = files.reduce((s, f) => s + f.size, 0);
+  const maxFile = files.reduce((m, f) => Math.max(m, f.size), 0);
+  if (maxFile >= LARGE_FILE_BYTES || totalBytes >= 500 * 1024 * 1024) return 1;
+  if (files.length > 80 || totalBytes >= 200 * 1024 * 1024) return 2;
+  return 2; // was 4 — safer default for browser tabs
 }
 
 export async function parseEpubBatch(
   files: File[],
   onProgress: (done: number, total: number, current: string) => void,
-  concurrency = 4,
+  concurrency?: number,
 ): Promise<ParsedBook[]> {
   const total = files.length;
   const results: ParsedBook[] = new Array(total);
   let next = 0;
   let done = 0;
+  const limit = concurrency ?? suggestConcurrency(files);
 
   async function worker() {
     while (true) {
@@ -225,15 +261,43 @@ export async function parseEpubBatch(
       if (i >= total) return;
       const file = files[i]!;
       onProgress(done, total, file.name);
-      results[i] = await parseEpub(file);
+      try {
+        results[i] = await parseEpub(file);
+      } catch (err) {
+        results[i] = {
+          id: uid(),
+          file,
+          originalName: file.name,
+          relativePath: relativePathOf(file),
+          size: file.size,
+          hash: "fallback-" + i,
+          status: "error",
+          error: isOomError(err)
+            ? "内存不足，无法解析此文件（请分批导入）"
+            : err instanceof Error
+              ? err.message
+              : "读取解析失败",
+          rawTitle: "",
+          authors: [],
+          publisher: "",
+          language: "",
+          identifiers: [],
+          description: "",
+          date: "",
+          subjects: [],
+          series: "",
+          spineCount: 0,
+          hasZlibTag: hasZlibTag(file.name),
+        };
+      }
       done += 1;
       onProgress(done, total, file.name);
+      // Yield to the browser so GC can run between books
+      await new Promise((r) => setTimeout(r, 0));
     }
   }
 
-  await Promise.all(
-    Array.from({ length: Math.min(concurrency, Math.max(total, 1)) }, () => worker()),
-  );
+  await Promise.all(Array.from({ length: Math.min(limit, Math.max(total, 1)) }, () => worker()));
   return results;
 }
 

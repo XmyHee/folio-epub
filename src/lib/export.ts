@@ -3,7 +3,7 @@ import type { DerivedBook } from "./types";
 
 function csvCell(value: string | number | undefined | null): string {
   const s = value == null ? "" : String(value);
-  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
   return s;
 }
 
@@ -55,7 +55,7 @@ export function toAuditCsv(books: DerivedBook[]): string {
         .join(","),
     );
   }
-  return `\uFEFF${lines.join("\n")}`;
+  return "\uFEFF" + lines.join("\n");
 }
 
 export function downloadBlob(blob: Blob, filename: string) {
@@ -82,15 +82,27 @@ export async function downloadLibraryZip(
   const kept = books.filter((b) => b.role === "unique" || b.role === "keep");
   const dropped = books.filter((b) => b.role === "duplicate" || b.role === "identical");
 
-  for (const book of kept) zip.file(`Library/${book.proposedName}`, book.file);
+  // Add as File/Blob references — JSZip reads them during generateAsync
+  for (const book of kept) zip.file("Library/" + book.proposedName, book.file);
   if (opts.includeDuplicates) {
-    for (const book of dropped) zip.file(`Duplicates/${book.originalName}`, book.file);
+    for (const book of dropped) zip.file("Duplicates/" + book.originalName, book.file);
   }
 
-  const blob = await zip.generateAsync({
-    type: "blob",
-    compression: "STORE",
-    mimeType: "application/zip",
-  });
-  downloadBlob(blob, "folio-library.zip");
+  try {
+    const blob = await zip.generateAsync({
+      type: "blob",
+      compression: "STORE",
+      mimeType: "application/zip",
+      streamFiles: true,
+    });
+    downloadBlob(blob, "folio-library.zip");
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/array buffer allocation failed|out of memory|oom/i.test(msg)) {
+      throw new Error(
+        "导出时内存不足。请取消「ZIP 中保留重复副本」，或分批导入后再导出。",
+      );
+    }
+    throw err;
+  }
 }
