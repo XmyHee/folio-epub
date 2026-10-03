@@ -1,6 +1,7 @@
 export type ParseStatus = "ok" | "error";
 export type NamingMode = 1 | 2;
 export type DedupeRole = "unique" | "keep" | "duplicate" | "identical";
+export type DedupeKind = "hash" | "isbn" | "title" | "fuzzy";
 
 export type ParsedBook = {
   id: string;
@@ -34,14 +35,16 @@ export type DerivedBook = ParsedBook & {
   role: DedupeRole;
   score: number;
   nameChanged: boolean;
+  isbn?: string | null;
 };
 
 export type DuplicateGroup = {
   id: string;
   key: string;
-  kind: "hash" | "title";
+  kind: DedupeKind;
   bookIds: string[];
   keepId: string;
+  reason?: string;
 };
 
 export type PipelineResult = {

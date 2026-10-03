@@ -443,9 +443,18 @@ export default function App() {
                   <section key={group.id} className="group">
                     <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center", marginBottom: "0.75rem" }}>
                       <h3 style={{ margin: 0 }}>{title}</h3>
-                      <span className={`badge ${group.kind === "hash" ? "badge-warn" : ""}`}>
-                        {group.kind === "hash" ? "内容完全相同" : "书名作者相同"}
+                      <span className={`badge ${group.kind === "hash" || group.kind === "isbn" ? "badge-warn" : group.kind === "fuzzy" ? "badge-accent" : ""}`}>
+                        {group.kind === "hash"
+                          ? "内容完全相同"
+                          : group.kind === "isbn"
+                            ? "ISBN 相同"
+                            : group.kind === "fuzzy"
+                              ? "书名相似"
+                              : "书名作者相同"}
                       </span>
+                      {group.reason ? (
+                        <span style={{ fontSize: "0.75rem", color: "var(--faint)" }}>{group.reason}</span>
+                      ) : null}
                       <span style={{ fontSize: "0.75rem", color: "var(--faint)" }}>
                         {members.length} 个版本
                       </span>
@@ -522,7 +531,7 @@ export default function App() {
           <div className="step">
             <div className="n">03</div>
             <h3>去重</h3>
-            <p>先比 SHA-256，再比归一化书名作者；保留更优版本。</p>
+            <p>SHA-256 → ISBN → 精确书名作者 → 模糊书名；按质量分保留最优。</p>
           </div>
         </div>
       ) : null}
