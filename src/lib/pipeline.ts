@@ -1,9 +1,11 @@
 import {
   authorFingerprint,
+  extractVolumeKey,
   looksLikeCopyName,
   primaryIsbn,
   proposeFilename,
   titleSimilarity,
+  titleWithoutVolume,
 } from "./normalize";
 import type {
   DerivedBook,
@@ -39,8 +41,8 @@ function uniqueName(desired: string, taken: Set<string>): string {
   if (!taken.has(desired.toLowerCase())) return desired;
   const stem = desired.replace(/\.epub$/i, "");
   let n = 2;
-  while (taken.has(`${stem} (${n}).epub`.toLowerCase())) n += 1;
-  return `${stem} (${n)}.epub`;
+  while (taken.has((stem + " (" + n + ").epub").toLowerCase())) n += 1;
+  return stem + " (" + n + ").epub";
 }
 
 function pickKeep(
@@ -94,7 +96,7 @@ class UnionFind {
   }
 }
 
-const FUZZY_TITLE_THRESHOLD = 0.82;
+const FUZZY_TITLE_THRESHOLD = 0.88;
 /** Only fuzzy-match when authors overlap or both missing */
 function authorsCompatible(a: DerivedBook, b: DerivedBook): boolean {
   const fa = authorFingerprint(a.authors);
@@ -181,7 +183,7 @@ export function runPipeline(
     for (const m of members) claimed.add(m.id);
   }
 
-  // ── 4) Fuzzy title + compatible authors ────────────────────────────
+  // ── 4) Fuzzy title + compatible authors (never merge different volumes) ──
   const candidates = derived.filter((b) => !claimed.has(b.id));
   const uf = new UnionFind();
   for (let i = 0; i < candidates.length; i++) {
@@ -189,8 +191,21 @@ export function runPipeline(
       const a = candidates[i]!;
       const b = candidates[j]!;
       if (!authorsCompatible(a, b)) continue;
-      const titleA = a.rawTitle || a.cleanTitle;
-      const titleB = b.rawTitle || b.cleanTitle;
+
+      // Multi-volume series: different volume / part numbers are different books
+      const volA = extractVolumeKey(a.rawTitle, a.series, a.originalName, a.relativePath);
+      const volB = extractVolumeKey(b.rawTitle, b.series, b.originalName, b.relativePath);
+      if (volA && volB && volA !== volB) continue;
+
+      // Different named series should not fuzzy-merge
+      const seriesA = (a.series || "").trim().toLowerCase();
+      const seriesB = (b.series || "").trim().toLowerCase();
+      if (seriesA && seriesB && seriesA !== seriesB) continue;
+
+      // Compare titles with volume markers stripped so "Foo Vol.1" vs "Foo Vol.2"
+      // are similar on base text but already blocked by volume check above
+      const titleA = titleWithoutVolume(a.rawTitle || a.cleanTitle);
+      const titleB = titleWithoutVolume(b.rawTitle || b.cleanTitle);
       if (titleSimilarity(titleA, titleB) >= FUZZY_TITLE_THRESHOLD) {
         uf.union(a.id, b.id);
       }
