@@ -192,6 +192,9 @@ export function runPipeline(
       const b = candidates[j]!;
       if (!authorsCompatible(a, b)) continue;
 
+      // Different ISBN => different editions/volumes, never fuzzy-merge
+      if (a.isbn && b.isbn && a.isbn !== b.isbn) continue;
+
       // Multi-volume series: different volume / part numbers are different books
       const volA = extractVolumeKey(a.rawTitle, a.series, a.originalName, a.relativePath);
       const volB = extractVolumeKey(b.rawTitle, b.series, b.originalName, b.relativePath);
