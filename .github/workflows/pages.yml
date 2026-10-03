@@ -26,8 +26,7 @@ jobs:
           cache: npm
 
       - name: Install
-        run: |
-          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+        run: npm ci
 
       - name: Build
         run: npm run build
