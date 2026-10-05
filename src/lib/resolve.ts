@@ -2,9 +2,22 @@ import { extractIsbns, primaryIsbn, stripZlibTag, stripVsiSuffix, collapseWs } f
 import type { OpenLibraryHit } from "./openlibrary";
 import type { MetaSource, ParsedBook } from "./types";
 
+const SKIP_AUTHOR_KEYWORDS = [
+  "z-lib",
+  "1lib",
+  "pdfdrive",
+  "org",
+  "sk",
+  "com",
+  "epub",
+  "pdf",
+  "zlib",
+];
+
 /**
- * Tier 3: derive title/author from filename with light regex cleaning.
- * e.g. "Collected Shorter Fiction, Vol. 1 - Leo Tolstoy.epub"
+ * Tier 3: filename regex (aligned with rename_pdf_isbn.py)
+ *  - "Title (Author) (z-library...)"
+ *  - "Title - Author"
  */
 export function metaFromFilename(originalName: string): {
   title: string;
@@ -15,44 +28,44 @@ export function metaFromFilename(originalName: string): {
   stem = stem.replace(/[\[\(]z-?lib[^\])]*[\]\)]/gi, " ");
   stem = collapseWs(stem);
 
-  // Pattern: Title - Author  OR  Title_Author  OR  Author - Title (heuristic)
-  let title = stem;
-  let authors: string[] = [];
-
-  const dash = stem.match(/^(.+?)\s+[-–—]\s+(.+)$/);
-  if (dash) {
-    const left = dash[1]!.trim();
-    const right = dash[2]!.trim();
-    // Prefer "Title - Author" when right looks like a person name (few words, no Vol.)
-    const rightLooksAuthor =
-      right.split(/\s+/).length <= 5 &&
-      !/\bvol(?:ume)?\.?\s*\d/i.test(right) &&
-      !/\d{4}/.test(right);
-    if (rightLooksAuthor) {
-      title = left;
-      authors = [right];
-    } else {
-      title = stem;
+  // Title (Author) (optional other parens)
+  const paren = stem.match(/^(.*?)\s*\(([^()]+)\)(?:\s*\([^()]+\))*$/);
+  if (paren) {
+    const rawTitle = collapseWs(paren[1] || "");
+    const rawAuthor = collapseWs(paren[2] || "");
+    if (rawAuthor && !SKIP_AUTHOR_KEYWORDS.some((k) => rawAuthor.toLowerCase().includes(k))) {
+      return { title: stripVsiSuffix(rawTitle), authors: [rawAuthor] };
     }
   }
 
-  title = stripVsiSuffix(title);
-  title = collapseWs(title.replace(/[_\.]+/g, " "));
-  return { title, authors };
+  // Title - Author
+  if (stem.includes(" - ")) {
+    const parts = stem.split(" - ");
+    if (parts.length >= 2) {
+      const left = collapseWs(parts[0] || "");
+      const right = collapseWs(parts.slice(1).join(" - "));
+      const rightLooksAuthor =
+        right.split(/\s+/).length <= 6 &&
+        !/\bvol(?:ume)?\.?\s*\d/i.test(right) &&
+        !SKIP_AUTHOR_KEYWORDS.some((k) => right.toLowerCase().includes(k));
+      if (rightLooksAuthor) {
+        return { title: stripVsiSuffix(left), authors: [right] };
+      }
+    }
+  }
+
+  return { title: stripVsiSuffix(collapseWs(stem)), authors: [] };
 }
 
 export type ResolveOptions = {
-  /** Open Library hits keyed by normalized ISBN */
   olByIsbn?: Map<string, OpenLibraryHit>;
-  /** If false, skip tier 1 even when ISBN present */
   online?: boolean;
 };
 
 /**
- * Three-tier metadata resolution (automatic fallback):
- *  1. ISBN → Open Library
- *  2. EPUB/PDF internal metadata
- *  3. Filename regex cleaning
+ * 1. ISBN → Google Books / Open Library
+ * 2. EPUB/PDF internal metadata
+ * 3. Filename regex
  */
 export function resolveBookMeta(
   book: ParsedBook,
@@ -67,9 +80,8 @@ export function resolveBookMeta(
   const isbn =
     book.isbn ??
     primaryIsbn(book.identifiers) ??
-    primaryIsbn(extractIsbnsFromText(book.originalName + " " + (book.rawTitle || "")));
+    primaryIsbn(extractIsbns([book.originalName + " " + (book.rawTitle || "")]));
 
-  // ── Tier 1: Open Library by ISBN ───────────────────────────────────
   if (opts.online !== false && isbn && opts.olByIsbn) {
     const key = isbn.replace(/[^0-9Xx]/g, "").toUpperCase();
     const hit = opts.olByIsbn.get(key);
@@ -84,7 +96,6 @@ export function resolveBookMeta(
     }
   }
 
-  // ── Tier 2: internal EPUB / PDF metadata ───────────────────────────
   const internalTitle = (book.rawTitle || "").trim();
   const internalAuthors = book.authors.filter(Boolean);
   if (internalTitle || internalAuthors.length > 0) {
@@ -98,7 +109,6 @@ export function resolveBookMeta(
     };
   }
 
-  // ── Tier 3: filename ───────────────────────────────────────────────
   const fromName = metaFromFilename(book.originalName);
   return {
     title: fromName.title || "Untitled",
@@ -107,8 +117,4 @@ export function resolveBookMeta(
     source: fromName.title ? "filename" : "none",
     isbn: isbn,
   };
-}
-
-function extractIsbnsFromText(text: string): string[] {
-  return extractIsbns([text]);
 }

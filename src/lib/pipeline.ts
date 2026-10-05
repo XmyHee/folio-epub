@@ -99,19 +99,37 @@ class UnionFind {
   }
 }
 
-const FUZZY_TITLE_THRESHOLD = 0.88;
+const FUZZY_TITLE_THRESHOLD = 0.94;
 /** Only fuzzy-match when authors overlap or both missing */
 function authorsCompatible(a: DerivedBook, b: DerivedBook): boolean {
   const fa = authorFingerprint(a.authors);
   const fb = authorFingerprint(b.authors);
-  if (!fa || !fb) return true; // missing author: still allow title-based fuzzy
+  // Both missing author: only allow fuzzy if titles are nearly identical (handled by higher threshold)
+  if (!fa && !fb) return true;
+  // One missing: do NOT fuzzy-merge (too many false positives for multi-volume sets)
+  if (!fa || !fb) return false;
   if (fa === fb) return true;
-  // partial overlap (shared surname / tokens)
-  const sa = new Set(fa.split(" "));
-  const sb = new Set(fb.split(" "));
+  const sa = new Set(fa.split(" ").filter((t) => t.length > 2));
+  const sb = new Set(fb.split(" ").filter((t) => t.length > 2));
   let inter = 0;
   for (const t of sa) if (sb.has(t)) inter += 1;
-  return inter >= 1;
+  // Require stronger author overlap (at least 2 shared tokens, or 1 if both single-token surnames)
+  if (sa.size <= 1 && sb.size <= 1) return inter >= 1;
+  return inter >= 2;
+}
+
+/** Extra guard: titles must share enough distinctive tokens */
+function titlesStrictMatch(a: string, b: string): boolean {
+  const sim = titleSimilarity(a, b);
+  if (sim < FUZZY_TITLE_THRESHOLD) return false;
+  // Reject if one title is much longer (likely different work in a series)
+  const la = a.replace(/\s+/g, "").length;
+  const lb = b.replace(/\s+/g, "").length;
+  if (la > 0 && lb > 0) {
+    const ratio = Math.min(la, lb) / Math.max(la, lb);
+    if (ratio < 0.75) return false;
+  }
+  return true;
 }
 
 export function runPipeline(
@@ -231,7 +249,7 @@ export function runPipeline(
       // are similar on base text but already blocked by volume check above
       const titleA = titleWithoutVolume(a.rawTitle || a.cleanTitle);
       const titleB = titleWithoutVolume(b.rawTitle || b.cleanTitle);
-      if (titleSimilarity(titleA, titleB) >= FUZZY_TITLE_THRESHOLD) {
+      if (titlesStrictMatch(titleA, titleB)) {
         uf.union(a.id, b.id);
       }
     }

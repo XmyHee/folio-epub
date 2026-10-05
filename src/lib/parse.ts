@@ -248,6 +248,39 @@ export function revokeCovers(books: ParsedBook[]) {
 
 
 /** Read first chunk of a PDF and pull Info dict Title/Author + ISBN-like strings */
+
+/** Extract ISBN-10/13 candidates from plain text (same patterns as rename_pdf_isbn.py) */
+function findIsbnInText(text: string): string | null {
+  const patterns = [
+    /978[-0-9\s]{10,16}/g,
+    /979[-0-9\s]{10,16}/g,
+    /ISBN(?:-1[03])?:?\s*([0-9X][0-9X\-\s]{9,17})/gi,
+  ];
+  for (const pattern of patterns) {
+    const matches = text.match(pattern) || [];
+    for (const m of matches) {
+      const clean = String(m).replace(/[^0-9X]/gi, "").toUpperCase();
+      // strip leading "ISBN" letters if any slipped in
+      const digits = clean.replace(/^ISBN/, "");
+      if (digits.length === 13 && /^97[89]/.test(digits)) return digits;
+      if (digits.length === 10) return digits;
+    }
+  }
+  return null;
+}
+
+function decodePdfLiteral(s: string): string {
+  let out = s.replace(/\\(\d{1,3})/g, (_, n) => String.fromCharCode(parseInt(n, 8)));
+  out = out.replace(/\\n/g, " ").replace(/\\r/g, " ").replace(/\\\(/g, "(").replace(/\\\)/g, ")");
+  return out.replace(/\0/g, "").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Lightweight PDF parse (no pdf.js dependency):
+ *  - Info dict Title/Author
+ *  - ISBN from first ~1.5MB binary/text (covers most front-matter)
+ * Full-file hash only when size is moderate (memory-safe).
+ */
 export async function parsePdf(file: File): Promise<ParsedBook> {
   const id = crypto.randomUUID();
   const originalName = file.name;
@@ -277,10 +310,11 @@ export async function parsePdf(file: File): Promise<ParsedBook> {
   };
 
   try {
-    const slice = file.slice(0, Math.min(file.size, 512 * 1024));
+    const scanSize = Math.min(file.size, 1536 * 1024);
+    const slice = file.slice(0, scanSize);
     const buffer = await slice.arrayBuffer();
-    // Hash only the slice for speed? Better hash full file for dedupe — use full when small
-    if (file.size <= 32 * 1024 * 1024) {
+
+    if (file.size <= 24 * 1024 * 1024) {
       const full = await file.arrayBuffer();
       const digest = await crypto.subtle.digest("SHA-256", full);
       base.hash = Array.from(new Uint8Array(digest))
@@ -295,24 +329,29 @@ export async function parsePdf(file: File): Promise<ParsedBook> {
           .join("");
     }
 
-    // Binary to latin1 string for PDF Info regex (UTF-16 titles handled loosely)
     const bytes = new Uint8Array(buffer);
     let text = "";
-    for (let i = 0; i < bytes.length; i++) text += String.fromCharCode(bytes[i]!);
+    // Prefer latin1 so binary PDF still yields ASCII ISBN / Title strings
+    const chunk = Math.min(bytes.length, 1536 * 1024);
+    for (let i = 0; i < chunk; i++) text += String.fromCharCode(bytes[i]!);
 
-    const titleM = text.match(/\/Title\s*\(([^\)]*)\)/i) || text.match(/\/Title\s*<([0-9A-Fa-f]+)>/);
-    const authorM = text.match(/\/Author\s*\(([^\)]*)\)/i);
-    if (titleM?.[1]) base.rawTitle = decodePdfString(titleM[1]);
-    if (authorM?.[1]) base.authors = [decodePdfString(authorM[1])].filter(Boolean);
-
-    const isbnHits = text.match(/(?:97[89][-\s]?\d{10}|\d{9}[\dXx])/g) || [];
-    base.identifiers = [...new Set(isbnHits.map((x) => x.replace(/[\s-]/g, "")))];
-    base.isbn = primaryIsbn(base.identifiers);
-
-    if (!base.rawTitle && base.authors.length === 0) {
-      // Not fatal — tier 3 filename will fill in
-      base.status = "ok";
+    const titleM = text.match(/\/Title\s*\(([^\)]{1,300})\)/);
+    const authorM = text.match(/\/Author\s*\(([^\)]{1,200})\)/);
+    if (titleM?.[1]) base.rawTitle = decodePdfLiteral(titleM[1]);
+    if (authorM?.[1]) {
+      const a = decodePdfLiteral(authorM[1]);
+      if (a) base.authors = [a];
     }
+
+    // Also try filename ISBN early
+    let isbn = findIsbnInText(originalName);
+    if (!isbn) isbn = findIsbnInText(text);
+    if (isbn) {
+      base.identifiers = [isbn];
+      base.isbn = isbn;
+    }
+
+    // Filename is never a hard error for PDF — tier 3 always available
     return base;
   } catch (err) {
     return {
@@ -322,22 +361,6 @@ export async function parsePdf(file: File): Promise<ParsedBook> {
       hash: base.hash || "fallback-" + id,
     };
   }
-}
-
-function decodePdfString(s: string): string {
-  // Basic PDF octal escapes \nnn
-  let out = s.replace(/\\(\d{1,3})/g, (_, n) => String.fromCharCode(parseInt(n, 8)));
-  out = out.replace(/\\n/g, " ").replace(/\\r/g, " ");
-  try {
-    // UTF-16BE BOM often used in PDF strings
-    if (out.charCodeAt(0) === 0xfeff || (out.length > 2 && out.charCodeAt(0) === 0)) {
-      const cleaned = out.replace(/\0/g, "");
-      return cleaned.trim();
-    }
-  } catch {
-    /* ignore */
-  }
-  return out.replace(/\s+/g, " ").trim();
 }
 
 export async function parseBook(file: File): Promise<ParsedBook> {

@@ -86,10 +86,10 @@ export default function App() {
           .map((b) => b.isbn || primaryIsbn(b.identifiers) || "")
           .filter(Boolean);
         if (isbns.length > 0) {
-          setOlProgress("Open Library 查询中…");
+          setOlProgress("书目查询中（Google Books / Open Library）…");
           try {
             const hits = await lookupIsbnBatch(isbns, (done, total) => {
-              setOlProgress("Open Library " + done + "/" + total);
+              setOlProgress("书目查询 " + done + "/" + total);
             });
             setOlByIsbn(hits);
           } catch {
@@ -382,7 +382,7 @@ export default function App() {
                           {book.metaSource ? (
                             <span className="badge" style={{ marginLeft: 6, fontSize: "0.7rem" }}>
                               {book.metaSource === "openlibrary"
-                                ? "OL"
+                                ? "在线书目"
                                 : book.metaSource === "epub"
                                   ? "EPUB"
                                   : book.metaSource === "pdf"
