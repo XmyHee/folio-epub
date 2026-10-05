@@ -36,6 +36,28 @@ export function stripZlibTag(text: string): string {
   return collapseWs(t);
 }
 
+
+/**
+ * Remove personalization / watermark crumbs often left in store EPUBs:
+ *   (for ​ ​)  (for . .)  (for John)  empty parens  zero-width spaces
+ */
+export function stripPersonalizationJunk(text: string): string {
+  if (!text) return "";
+  let t = text;
+  // Zero-width & BOM-like chars
+  t = t.replace(/[\u200B-\u200D\uFEFF\u00A0]/g, " ");
+  // (for …) with little/no real content
+  t = t.replace(/\(\s*for\s*[\s.,;:·•_*\-–—]*\)/gi, " ");
+  // (for Name) personalization — drop whole clause
+  t = t.replace(/\(\s*for\s+[^)]{0,40}\)/gi, " ");
+  // Empty or punctuation-only parentheses
+  t = t.replace(/\(\s*[\s.,;:·•_*\-–—]*\)/g, " ");
+  // Trailing " - " leftovers
+  t = t.replace(/\s+[-–—]\s*$/g, " ");
+  return collapseWs(t);
+}
+
+
 export function hasZlibTag(name: string): boolean {
   return /z-library/i.test(name);
 }
@@ -52,7 +74,7 @@ export function alnumKey(text: string): string {
 
 export function cleanKeyText(text: string | undefined | null): string {
   if (!text) return "";
-  return alnumKey(stripVsiSuffix(stripZlibTag(String(text))));
+  return alnumKey(stripPersonalizationJunk(stripVsiSuffix(stripZlibTag(String(text)))));
 }
 
 export function sanitizeFilenamePart(text: string): string {
@@ -128,7 +150,7 @@ export function sanitizeVsiTitle(
 ): string {
   if (!title) return "";
   const hadVsi = looksLikeVsi(title) || looksLikeVsi(originalHint || "");
-  let t = stripVsiSuffix(stripZlibTag(collapseWs(title)));
+  let t = stripPersonalizationJunk(stripVsiSuffix(stripZlibTag(collapseWs(title))));
   t = t.replace(/[-:\u2013\u2014,\s]+$/g, "").trim();
   t = balanceParens(t);
   if (mode === 2 && t) {
@@ -281,8 +303,8 @@ export function proposeFilename(
 ): { cleanTitle: string; displayAuthor: string; proposedName: string; bookKey: string } {
   const extMatch = originalName.match(/\.(epub|pdf)$/i);
   const ext = extMatch ? extMatch[0]!.toLowerCase() : ".epub";
-  const fallbackTitle = stripVsiSuffix(
-    stripZlibTag(originalName.replace(/\.(epub|pdf)$/i, "")),
+  const fallbackTitle = stripPersonalizationJunk(
+    stripVsiSuffix(stripZlibTag(originalName.replace(/\.(epub|pdf)$/i, ""))),
   );
   const cleanTitle =
     sanitizeVsiTitle(title, mode, series, originalName) || sanitizeFilenamePart(fallbackTitle) || "Untitled";

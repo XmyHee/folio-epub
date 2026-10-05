@@ -614,7 +614,7 @@ export default function App() {
           <div className="step">
             <div className="n">02</div>
             <h3>命名</h3>
-            <p>模式1：清洗书名；模式2：有丛书元数据则附加（丛书名），仅 VSI 书才加 Very Short Introductions。</p>
+            <p>模式1：清洗书名；模式2：有丛书元数据则附加（丛书名）。</p>
           </div>
           <div className="step">
             <div className="n">03</div>
