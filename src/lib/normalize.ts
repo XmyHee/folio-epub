@@ -27,7 +27,7 @@ export function collapseWs(text: string): string {
 export function stripVsiSuffix(text: string): string {
   let t = text;
   for (const pat of VSI_PATTERNS) t = t.replace(pat, " ");
-  return collapseWs(t).replace(/[-:\u2013\u2014,()[\]]+$/g, "").trim();
+  return collapseWs(t).replace(/[-:\u2013\u2014,\s]+$/g, "").trim();
 }
 
 export function stripZlibTag(text: string): string {
@@ -98,6 +98,22 @@ export function looksLikeVsi(text: string): boolean {
  * Mode 2: append real series from metadata when present;
  *         only add "(Very Short Introductions)" if this book itself was VSI.
  */
+
+/** Drop incomplete trailing "(..." if parentheses are unbalanced */
+function balanceParens(text: string): string {
+  let opens = 0;
+  for (const ch of text) {
+    if (ch === "(") opens += 1;
+    else if (ch === ")") opens = Math.max(0, opens - 1);
+  }
+  if (opens === 0) return text;
+  const idx = text.lastIndexOf("(");
+  if (idx > 0) {
+    return text.slice(0, idx).replace(/[-:\u2013\u2014,\s]+$/g, "").trim();
+  }
+  return text;
+}
+
 export function sanitizeVsiTitle(
   title: string,
   mode: NamingMode,
@@ -107,7 +123,8 @@ export function sanitizeVsiTitle(
   if (!title) return "";
   const hadVsi = looksLikeVsi(title) || looksLikeVsi(originalHint || "");
   let t = stripVsiSuffix(stripZlibTag(collapseWs(title)));
-  t = t.replace(/[-:\u2013\u2014,()[\]]+$/g, "").trim();
+  t = t.replace(/[-:\u2013\u2014,\s]+$/g, "").trim();
+  t = balanceParens(t);
   if (mode === 2 && t) {
     const ser = (series || "").trim();
     if (ser) {

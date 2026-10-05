@@ -1,11 +1,16 @@
-export function isBookFile(file: File): boolean {
+export type BookKindFilter = "all" | "epub" | "pdf";
+
+export function isBookFile(file: File, kind: BookKindFilter = "all"): boolean {
   const n = file.name.toLowerCase();
-  return n.endsWith(".epub") || n.endsWith(".pdf");
+  const isEpub = n.endsWith(".epub");
+  const isPdf = n.endsWith(".pdf");
+  if (kind === "epub") return isEpub;
+  if (kind === "pdf") return isPdf;
+  return isEpub || isPdf;
 }
 
-/** @deprecated use isBookFile */
 export function isEpubFile(file: File): boolean {
-  return isBookFile(file);
+  return isBookFile(file, "epub");
 }
 
 type AnyEntry = {
@@ -31,19 +36,22 @@ async function readAllEntries(
   return out;
 }
 
-async function walkEntry(entry: AnyEntry, acc: File[]): Promise<void> {
+async function walkEntry(entry: AnyEntry, acc: File[], kind: BookKindFilter): Promise<void> {
   if (entry.isFile && entry.file) {
     const file = await new Promise<File>((resolve, reject) => entry.file!(resolve, reject));
-    if (isBookFile(file)) acc.push(file);
+    if (isBookFile(file, kind)) acc.push(file);
     return;
   }
   if (entry.isDirectory && entry.createReader) {
     const children = await readAllEntries(entry.createReader());
-    for (const child of children) await walkEntry(child, acc);
+    for (const child of children) await walkEntry(child, acc, kind);
   }
 }
 
-export async function filesFromDataTransfer(dt: DataTransfer): Promise<File[]> {
+export async function filesFromDataTransfer(
+  dt: DataTransfer,
+  kind: BookKindFilter = "all",
+): Promise<File[]> {
   const acc: File[] = [];
   const entries: AnyEntry[] = [];
   for (const item of Array.from(dt.items ?? [])) {
@@ -52,15 +60,15 @@ export async function filesFromDataTransfer(dt: DataTransfer): Promise<File[]> {
     if (entry) entries.push(entry);
   }
   if (entries.length > 0) {
-    for (const entry of entries) await walkEntry(entry, acc);
+    for (const entry of entries) await walkEntry(entry, acc, kind);
     if (acc.length > 0) return acc;
   }
-  return Array.from(dt.files ?? []).filter(isBookFile);
+  return Array.from(dt.files ?? []).filter((f) => isBookFile(f, kind));
 }
 
-export function filesFromInput(list: FileList | null): File[] {
+export function filesFromInput(list: FileList | null, kind: BookKindFilter = "all"): File[] {
   if (!list) return [];
-  return Array.from(list).filter(isBookFile);
+  return Array.from(list).filter((f) => isBookFile(f, kind));
 }
 
 export function formatBytes(bytes: number): string {

@@ -250,6 +250,13 @@ export function revokeCovers(books: ParsedBook[]) {
 /** Read first chunk of a PDF and pull Info dict Title/Author + ISBN-like strings */
 
 /** Extract ISBN-10/13 candidates from plain text (same patterns as rename_pdf_isbn.py) */
+/**
+ * Lightweight PDF parse (no pdf.js dependency):
+ *  - Info dict Title/Author
+ *  - ISBN from first ~1.5MB binary/text (covers most front-matter)
+ * Full-file hash only when size is moderate (memory-safe).
+ */
+
 function findIsbnInText(text: string): string | null {
   const patterns = [
     /978[-0-9\s]{10,16}/g,
@@ -258,10 +265,8 @@ function findIsbnInText(text: string): string | null {
   ];
   for (const pattern of patterns) {
     const matches = text.match(pattern) || [];
-    for (const m of matches) {
-      const clean = String(m).replace(/[^0-9X]/gi, "").toUpperCase();
-      // strip leading "ISBN" letters if any slipped in
-      const digits = clean.replace(/^ISBN/, "");
+    for (const raw of matches) {
+      const digits = String(raw).replace(/[^0-9X]/gi, "").toUpperCase().replace(/^ISBN/, "");
       if (digits.length === 13 && /^97[89]/.test(digits)) return digits;
       if (digits.length === 10) return digits;
     }
@@ -271,16 +276,18 @@ function findIsbnInText(text: string): string | null {
 
 function decodePdfLiteral(s: string): string {
   let out = s.replace(/\\(\d{1,3})/g, (_, n) => String.fromCharCode(parseInt(n, 8)));
-  out = out.replace(/\\n/g, " ").replace(/\\r/g, " ").replace(/\\\(/g, "(").replace(/\\\)/g, ")");
+  out = out.replace(/\\n/g, " ").replace(/\\r/g, " ");
   return out.replace(/\0/g, "").replace(/\s+/g, " ").trim();
 }
 
-/**
- * Lightweight PDF parse (no pdf.js dependency):
- *  - Info dict Title/Author
- *  - ISBN from first ~1.5MB binary/text (covers most front-matter)
- * Full-file hash only when size is moderate (memory-safe).
- */
+async function hashBuffer(buffer: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", buffer);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/** PDF via pdf.js (first pages text + metadata + optional cover) */
 export async function parsePdf(file: File): Promise<ParsedBook> {
   const id = crypto.randomUUID();
   const originalName = file.name;
@@ -310,58 +317,117 @@ export async function parsePdf(file: File): Promise<ParsedBook> {
   };
 
   try {
-    const scanSize = Math.min(file.size, 1536 * 1024);
-    const slice = file.slice(0, scanSize);
-    const buffer = await slice.arrayBuffer();
-
-    if (file.size <= 24 * 1024 * 1024) {
-      const full = await file.arrayBuffer();
-      const digest = await crypto.subtle.digest("SHA-256", full);
-      base.hash = Array.from(new Uint8Array(digest))
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join("");
+    // Hash (full file only if not huge)
+    if (file.size <= 40 * 1024 * 1024) {
+      base.hash = await hashBuffer(await file.arrayBuffer());
     } else {
-      const digest = await crypto.subtle.digest("SHA-256", buffer);
-      base.hash =
-        "partial-" +
-        Array.from(new Uint8Array(digest))
-          .map((b) => b.toString(16).padStart(2, "0"))
-          .join("");
+      base.hash = "partial-" + (await hashBuffer(await file.slice(0, 2 * 1024 * 1024).arrayBuffer()));
     }
 
-    const bytes = new Uint8Array(buffer);
+    // Dynamic pdf.js — only loaded when a PDF is opened
+    const pdfjs = await import("pdfjs-dist");
+    // Vite worker
+    try {
+      const worker = await import("pdfjs-dist/build/pdf.worker.min.mjs?url");
+      pdfjs.GlobalWorkerOptions.workerSrc = worker.default;
+    } catch {
+      pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+        "pdfjs-dist/build/pdf.worker.min.mjs",
+        import.meta.url,
+      ).toString();
+    }
+
+    const data = new Uint8Array(await file.arrayBuffer());
+    const doc = await pdfjs.getDocument({ data, useSystemFonts: true }).promise;
+    base.spineCount = doc.numPages;
+
+    const meta = await doc.getMetadata().catch(() => null);
+    const info = (meta as { info?: Record<string, string> } | null)?.info;
+    if (info) {
+      if (info.Title) base.rawTitle = String(info.Title).trim();
+      if (info.Author) base.authors = [String(info.Author).trim()].filter(Boolean);
+      if (info.Subject) base.subjects = [String(info.Subject).trim()].filter(Boolean);
+      if (info.Keywords) {
+        const kw = String(info.Keywords);
+        const isbn = findIsbnInText(kw);
+        if (isbn) base.identifiers.push(isbn);
+      }
+    }
+
+    // First 5 pages text for ISBN (same idea as rename_pdf_isbn.py)
+    const maxPages = Math.min(doc.numPages, 5);
     let text = "";
-    // Prefer latin1 so binary PDF still yields ASCII ISBN / Title strings
-    const chunk = Math.min(bytes.length, 1536 * 1024);
-    for (let i = 0; i < chunk; i++) text += String.fromCharCode(bytes[i]!);
-
-    const titleM = text.match(/\/Title\s*\(([^\)]{1,300})\)/);
-    const authorM = text.match(/\/Author\s*\(([^\)]{1,200})\)/);
-    if (titleM?.[1]) base.rawTitle = decodePdfLiteral(titleM[1]);
-    if (authorM?.[1]) {
-      const a = decodePdfLiteral(authorM[1]);
-      if (a) base.authors = [a];
+    for (let i = 1; i <= maxPages; i++) {
+      const page = await doc.getPage(i);
+      const content = await page.getTextContent();
+      const pageText = content.items
+        .map((it) => ("str" in it ? String((it as { str: string }).str) : ""))
+        .join(" ");
+      text += pageText + "\n";
     }
 
-    // Also try filename ISBN early
-    let isbn = findIsbnInText(originalName);
-    if (!isbn) isbn = findIsbnInText(text);
+    let isbn = findIsbnInText(originalName) || findIsbnInText(text);
     if (isbn) {
-      base.identifiers = [isbn];
+      base.identifiers = [...new Set([...base.identifiers, isbn])];
       base.isbn = isbn;
     }
 
-    // Filename is never a hard error for PDF — tier 3 always available
+    // Cover: render page 1 thumbnail (skip very large docs)
+    if (doc.numPages >= 1 && file.size <= 60 * 1024 * 1024) {
+      try {
+        const page = await doc.getPage(1);
+        const viewport = page.getViewport({ scale: 0.35 });
+        const canvas = document.createElement("canvas");
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          await page.render({ canvasContext: ctx, viewport, canvas } as Parameters<
+            typeof page.render
+          >[0]).promise;
+          const blob = await new Promise<Blob | null>((resolve) =>
+            canvas.toBlob(resolve, "image/jpeg", 0.72),
+          );
+          if (blob && blob.size < 1.5 * 1024 * 1024) {
+            base.coverUrl = URL.createObjectURL(blob);
+          }
+        }
+      } catch {
+        /* cover optional */
+      }
+    }
+
+    await doc.destroy();
     return base;
   } catch (err) {
-    return {
-      ...base,
-      status: "error",
-      error: err instanceof Error ? err.message : "PDF 读取失败",
-      hash: base.hash || "fallback-" + id,
-    };
+    // Fallback: binary scan (no pdf.js)
+    try {
+      const scan = await file.slice(0, Math.min(file.size, 1536 * 1024)).arrayBuffer();
+      if (!base.hash) base.hash = "partial-" + (await hashBuffer(scan));
+      const bytes = new Uint8Array(scan);
+      let raw = "";
+      for (let i = 0; i < bytes.length; i++) raw += String.fromCharCode(bytes[i]!);
+      const titleM = raw.match(/\/Title\s*\(([^\)]{1,300})\)/);
+      const authorM = raw.match(/\/Author\s*\(([^\)]{1,200})\)/);
+      if (titleM?.[1]) base.rawTitle = decodePdfLiteral(titleM[1]);
+      if (authorM?.[1]) base.authors = [decodePdfLiteral(authorM[1])].filter(Boolean);
+      const isbn = findIsbnInText(originalName) || findIsbnInText(raw);
+      if (isbn) {
+        base.identifiers = [isbn];
+        base.isbn = isbn;
+      }
+      return base;
+    } catch {
+      return {
+        ...base,
+        status: "error",
+        error: err instanceof Error ? err.message : "PDF 读取失败",
+        hash: base.hash || "fallback-" + id,
+      };
+    }
   }
 }
+
 
 export async function parseBook(file: File): Promise<ParsedBook> {
   const name = file.name.toLowerCase();

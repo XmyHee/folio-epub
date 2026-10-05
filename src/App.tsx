@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, type DragEvent } from "react";
 import { downloadCsv, downloadLibraryZip } from "./lib/export";
-import { filesFromDataTransfer, filesFromInput, formatBytes } from "./lib/files";
+import { filesFromDataTransfer, filesFromInput, formatBytes, type BookKindFilter } from "./lib/files";
 import { parseEpubBatch, revokeCovers } from "./lib/parse";
 import { lookupIsbnBatch } from "./lib/openlibrary";
 import { primaryIsbn } from "./lib/normalize";
@@ -25,6 +25,7 @@ function Cover({ src }: { src?: string }) {
 export default function App() {
   const [books, setBooks] = useState<ParsedBook[]>([]);
   const [namingMode, setNamingMode] = useState<NamingMode>(1);
+  const [importKind, setImportKind] = useState<BookKindFilter>("epub");
   const [useOnlineMeta, setUseOnlineMeta] = useState(true);
   const [olProgress, setOlProgress] = useState<string | null>(null);
   const [includeDuplicates, setIncludeDuplicates] = useState(true);
@@ -63,7 +64,7 @@ export default function App() {
 
     async function ingest(files: File[]) {
     if (files.length === 0) {
-      setError("没有找到 EPUB / PDF 文件");
+      setError("没有找到目标类型文件。请先点上方「EPUB 书籍」或「PDF 书籍」，再选择对应格式。");
       return;
     }
     revokeCovers(books);
@@ -128,7 +129,7 @@ export default function App() {
     e.preventDefault();
     setOver(false);
     if (busy) return;
-    const files = await filesFromDataTransfer(e.dataTransfer);
+    const files = await filesFromDataTransfer(e.dataTransfer, importKind);
     await ingest(files);
   }
 
@@ -152,7 +153,7 @@ export default function App() {
       <header className="header">
         <div>
           <p className="kicker">Folio</p>
-          <h1>把散乱的 EPUB 整理成一座干净书库</h1>
+          <h1>把散乱的 EPUB / PDF 整理成一座干净书库</h1>
           <p className="lead">
             依次读取内部元数据、按书名与作者命名、再按指纹与书目去重。文件只在本机浏览器处理，不会上传。
           </p>
@@ -169,9 +170,30 @@ export default function App() {
         onDragLeave={() => setOver(false)}
         onDrop={onDrop}
       >
-        <div className={`drop${over ? " over" : ""}`}>
-          <h2>把 EPUB 拖到这里</h2>
-          <p>支持多文件或整个文件夹。解析书名、作者、封面与 ISBN，再规范命名并去重。</p>
+        <div className={over ? "drop over" : "drop"}>
+          <div className="actions" style={{ marginBottom: "0.75rem", justifyContent: "center" }}>
+            <button
+              type="button"
+              className={importKind === "epub" ? "btn btn-primary" : "btn btn-secondary"}
+              disabled={busy}
+              onClick={() => setImportKind("epub")}
+            >
+              EPUB 书籍
+            </button>
+            <button
+              type="button"
+              className={importKind === "pdf" ? "btn btn-primary" : "btn btn-secondary"}
+              disabled={busy}
+              onClick={() => setImportKind("pdf")}
+            >
+              PDF 书籍
+            </button>
+          </div>
+          <h2>{importKind === "pdf" ? "把 PDF 拖到这里" : "把 EPUB 拖到这里"}</h2>
+          <p>
+            当前仅导入 {importKind === "pdf" ? "PDF" : "EPUB"}。
+            两种格式请分开选择；解析书名、作者、封面与 ISBN 后规范命名并去重。
+          </p>
           <div className="actions">
             <button
               type="button"
@@ -179,7 +201,7 @@ export default function App() {
               disabled={busy}
               onClick={() => fileRef.current?.click()}
             >
-              选择文件
+              {importKind === "pdf" ? "选择 PDF 文件" : "选择 EPUB 文件"}
             </button>
             <button
               type="button"
@@ -198,11 +220,11 @@ export default function App() {
           <input
             ref={fileRef}
             type="file"
-            accept=".epub,.pdf,application/epub+zip,application/pdf"
+            accept={importKind === "pdf" ? ".pdf,application/pdf" : ".epub,application/epub+zip"}
             multiple
             className="hidden-input"
             onChange={(e) => {
-              void ingest(filesFromInput(e.target.files));
+              void ingest(filesFromInput(e.target.files, importKind));
               e.target.value = "";
             }}
           />
@@ -214,7 +236,7 @@ export default function App() {
             webkitdirectory=""
             className="hidden-input"
             onChange={(e) => {
-              void ingest(filesFromInput(e.target.files));
+              void ingest(filesFromInput(e.target.files, importKind));
               e.target.value = "";
             }}
           />
