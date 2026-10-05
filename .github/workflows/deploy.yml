@@ -35,7 +35,10 @@ jobs:
           pip install pymupdf
 
       - name: 4. 执行图书预处理脚本
-        run: python audit_library.py
+        run: |
+          python audit_library.py
+          # 如果你有生成 books.json 的脚本，在此处一并运行：
+          # python build_library.py
 
       - name: 5. 配置 Node.js 环境
         uses: actions/setup-node@v4
