@@ -609,7 +609,7 @@ export default function App() {
           <div className="step">
             <div className="n">01</div>
             <h3>审计</h3>
-            <p>打开 EPUB（ZIP + OPF），读取书名、作者、出版社、ISBN 与封面。</p>
+            <p>打开 EPUB/PDF 书籍（ZIP + OPF），读取书名、作者、出版社、ISBN 与封面。</p>
           </div>
           <div className="step">
             <div className="n">02</div>
