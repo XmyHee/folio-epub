@@ -2,7 +2,7 @@
 
 > 一个轻量、优雅且现代化的个人数字书坊（支持 **EPUB** 与 **PDF** 双格式），集成本地预处理、自动封面抽取与 GitHub Pages 自动化部署。
 
-[![Deploy to GitHub Pages](https://github.com/XmyHee/folio-library/actions/workflows/deploy.yml/badge.svg?branch=main)](https://github.com/XmyHee/folio-library/actions/workflows/deploy.yml)
+[![Deploy to GitHub Pages](https://github.com/XmyHee/folio-library/actions/workflows/pages.yml/badge.svg?branch=main)](https://github.com/XmyHee/folio-library/actions/workflows/pages.yml)
 ![Supported Formats](https://img.shields.io/badge/Formats-EPUB%20%7C%20PDF-blue)
 
 🌐 **在线演示**：[https://xmyhee.github.io/folio-library/](https://xmyhee.github.io/folio-library/)
