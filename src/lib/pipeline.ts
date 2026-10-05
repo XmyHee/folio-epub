@@ -151,6 +151,7 @@ export function runPipeline(
       resolved.authors,
       book.originalName,
       mode,
+      book.series,
     );
     return {
       ...book,

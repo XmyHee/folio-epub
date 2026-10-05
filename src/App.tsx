@@ -292,7 +292,7 @@ export default function App() {
                   className={namingMode === 2 ? "active" : ""}
                   onClick={() => setNamingMode(2)}
                 >
-                  丛书后缀
+                  附丛书名
                 </button>
               </div>
               <label className="toggle">
@@ -592,7 +592,7 @@ export default function App() {
           <div className="step">
             <div className="n">02</div>
             <h3>命名</h3>
-            <p>去掉 VSI / z-library 杂质，统一为「书名 - 作者.epub」。</p>
+            <p>模式1：清洗书名；模式2：有丛书元数据则附加（丛书名），仅 VSI 书才加 Very Short Introductions。</p>
           </div>
           <div className="step">
             <div className="n">03</div>

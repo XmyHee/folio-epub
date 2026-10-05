@@ -1,5 +1,11 @@
+export function isBookFile(file: File): boolean {
+  const n = file.name.toLowerCase();
+  return n.endsWith(".epub") || n.endsWith(".pdf");
+}
+
+/** @deprecated use isBookFile */
 export function isEpubFile(file: File): boolean {
-  return file.name.toLowerCase().endsWith(".epub");
+  return isBookFile(file);
 }
 
 type AnyEntry = {
@@ -28,7 +34,7 @@ async function readAllEntries(
 async function walkEntry(entry: AnyEntry, acc: File[]): Promise<void> {
   if (entry.isFile && entry.file) {
     const file = await new Promise<File>((resolve, reject) => entry.file!(resolve, reject));
-    if (isEpubFile(file)) acc.push(file);
+    if (isBookFile(file)) acc.push(file);
     return;
   }
   if (entry.isDirectory && entry.createReader) {
@@ -49,12 +55,12 @@ export async function filesFromDataTransfer(dt: DataTransfer): Promise<File[]> {
     for (const entry of entries) await walkEntry(entry, acc);
     if (acc.length > 0) return acc;
   }
-  return Array.from(dt.files ?? []).filter(isEpubFile);
+  return Array.from(dt.files ?? []).filter(isBookFile);
 }
 
 export function filesFromInput(list: FileList | null): File[] {
   if (!list) return [];
-  return Array.from(list).filter(isEpubFile);
+  return Array.from(list).filter(isBookFile);
 }
 
 export function formatBytes(bytes: number): string {
@@ -62,5 +68,5 @@ export function formatBytes(bytes: number): string {
   const units = ["B", "KB", "MB", "GB"];
   const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   const value = bytes / 1024 ** i;
-  return `${value >= 10 || i === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[i]}`;
+  return (value >= 10 || i === 0 ? value.toFixed(0) : value.toFixed(1)) + " " + units[i];
 }

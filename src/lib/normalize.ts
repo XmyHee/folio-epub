@@ -89,15 +89,40 @@ export function joinAuthors(authors: string[]): string {
   return `${names.slice(0, -1).join(", ")} & ${names[names.length - 1]}`;
 }
 
-export function sanitizeVsiTitle(title: string, mode: NamingMode): string {
+export function looksLikeVsi(text: string): boolean {
+  return /very\s*short\s*introduction/i.test(text || "");
+}
+
+/**
+ * Mode 1: clean title only (strip VSI / z-lib noise).
+ * Mode 2: append real series from metadata when present;
+ *         only add "(Very Short Introductions)" if this book itself was VSI.
+ */
+export function sanitizeVsiTitle(
+  title: string,
+  mode: NamingMode,
+  series?: string,
+  originalHint?: string,
+): string {
   if (!title) return "";
+  const hadVsi = looksLikeVsi(title) || looksLikeVsi(originalHint || "");
   let t = stripVsiSuffix(stripZlibTag(collapseWs(title)));
   t = t.replace(/[-:\u2013\u2014,()[\]]+$/g, "").trim();
-  if (mode === 2 && t) t = `${t} (Very Short Introductions)`;
+  if (mode === 2 && t) {
+    const ser = (series || "").trim();
+    if (ser) {
+      const serClean = sanitizeFilenamePart(stripZlibTag(ser));
+      if (serClean && !t.toLowerCase().includes(serClean.toLowerCase())) {
+        t = t + " (" + serClean + ")";
+      }
+    } else if (hadVsi) {
+      t = t + " (Very Short Introductions)";
+    }
+  }
   return sanitizeFilenamePart(t);
 }
 
-/** Title tokens for fuzzy match (drop short stopwords) */
+
 export function titleTokens(title: string): string[] {
   const cleaned = stripVsiSuffix(stripZlibTag(title || ""))
     .toLowerCase()
@@ -215,6 +240,7 @@ export function proposeFilename(
   authors: string[],
   originalName: string,
   mode: NamingMode,
+  series?: string,
 ): { cleanTitle: string; displayAuthor: string; proposedName: string; bookKey: string } {
   const extMatch = originalName.match(/\.(epub|pdf)$/i);
   const ext = extMatch ? extMatch[0]!.toLowerCase() : ".epub";
@@ -222,7 +248,7 @@ export function proposeFilename(
     stripZlibTag(originalName.replace(/\.(epub|pdf)$/i, "")),
   );
   const cleanTitle =
-    sanitizeVsiTitle(title, mode) || sanitizeFilenamePart(fallbackTitle) || "Untitled";
+    sanitizeVsiTitle(title, mode, series, originalName) || sanitizeFilenamePart(fallbackTitle) || "Untitled";
   const displayAuthor = joinAuthors(authors);
   const proposedName =
     cleanTitle + " - " + sanitizeFilenamePart(displayAuthor) + ext;
