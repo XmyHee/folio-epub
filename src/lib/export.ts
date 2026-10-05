@@ -7,12 +7,22 @@ function csvCell(value: string | number | undefined | null): string {
   return s;
 }
 
+function formatLabel(book: DerivedBook): string {
+  if (book.kind === "pdf") return "PDF";
+  if (book.kind === "epub") return "EPUB";
+  const n = (book.originalName || "").toLowerCase();
+  if (n.endsWith(".pdf")) return "PDF";
+  if (n.endsWith(".epub")) return "EPUB";
+  return book.kind || "";
+}
+
 export function toAuditCsv(books: DerivedBook[]): string {
   const header = [
+    "格式",
     "原始文件名",
     "相对路径",
-    "EPUB内部书名",
-    "EPUB内部作者",
+    "书名",
+    "作者",
     "出版社",
     "语言",
     "ISBN/标识",
@@ -20,6 +30,7 @@ export function toAuditCsv(books: DerivedBook[]): string {
     "丛书",
     "建议文件名",
     "去重结果",
+    "元数据来源",
     "文件大小",
     "SHA-256",
     "状态",
@@ -34,12 +45,26 @@ export function toAuditCsv(books: DerivedBook[]): string {
           : b.role === "identical"
             ? "完全相同"
             : "唯一";
+    const meta =
+      b.metaSource === "openlibrary"
+        ? "在线书目"
+        : b.metaSource === "epub"
+          ? "EPUB内置"
+          : b.metaSource === "pdf"
+            ? "PDF内置"
+            : b.metaSource === "filename"
+              ? "文件名"
+              : b.metaSource || "";
     lines.push(
       [
+        formatLabel(b),
         b.originalName,
         b.relativePath,
-        b.rawTitle || (b.status === "error" ? "读取解析失败" : "【缺失书名】"),
-        b.authors.join("; ") || (b.status === "error" ? (b.error ?? "") : "【缺失作者】"),
+        b.resolvedTitle || b.rawTitle || (b.status === "error" ? "读取解析失败" : "【缺失书名】"),
+        (b.resolvedAuthors && b.resolvedAuthors.length
+          ? b.resolvedAuthors
+          : b.authors
+        ).join("; ") || (b.status === "error" ? (b.error ?? "") : "【缺失作者】"),
         b.publisher,
         b.language,
         b.identifiers.join("; "),
@@ -47,6 +72,7 @@ export function toAuditCsv(books: DerivedBook[]): string {
         b.series,
         b.proposedName,
         role,
+        meta,
         b.size,
         b.hash,
         b.status === "ok" ? "OK" : (b.error ?? "ERROR"),
@@ -82,7 +108,6 @@ export async function downloadLibraryZip(
   const kept = books.filter((b) => b.role === "unique" || b.role === "keep");
   const dropped = books.filter((b) => b.role === "duplicate" || b.role === "identical");
 
-  // Add as File/Blob references — JSZip reads them during generateAsync
   for (const book of kept) zip.file("Library/" + book.proposedName, book.file);
   if (opts.includeDuplicates) {
     for (const book of dropped) zip.file("Duplicates/" + book.originalName, book.file);
