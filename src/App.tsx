@@ -263,6 +263,18 @@ export default function App() {
               <label>将隔离</label>
               <strong>{pipeline.stats.toIsolate}</strong>
             </div>
+            <div className="stat">
+              <span>Open Library</span>
+              <strong>{pipeline.stats.fromOpenLibrary}</strong>
+            </div>
+            <div className="stat">
+              <span>书内元数据</span>
+              <strong>{pipeline.stats.fromInternal}</strong>
+            </div>
+            <div className="stat">
+              <span>文件名</span>
+              <strong>{pipeline.stats.fromFilename}</strong>
+            </div>
           </div>
 
           <div className="toolbar">
@@ -290,6 +302,14 @@ export default function App() {
                   onChange={(e) => setIncludeDuplicates(e.target.checked)}
                 />
                 ZIP 中保留重复副本
+              </label>
+              <label className="toggle" title="优先用 ISBN 查 Open Library；失败则用书内元数据；再失败则清洗文件名">
+                <input
+                  type="checkbox"
+                  checked={useOnlineMeta}
+                  onChange={(e) => setUseOnlineMeta(e.target.checked)}
+                />
+                Open Library（ISBN）
               </label>
             </div>
             <div className="actions" style={{ marginTop: 0, justifyContent: "flex-start" }}>
@@ -600,7 +620,7 @@ export default function App() {
               ×
             </button>
             <h2 id="detail-title">内部元数据</h2>
-            <p className="sub">从 EPUB 的 OPF 包文档读取，而不是文件名。</p>
+            <p className="sub">ISBN→Open Library → 书内元数据 → 文件名清洗。</p>
             <div style={{ display: "flex", gap: "1rem", marginBottom: "1rem" }}>
               <div className="cover" style={{ width: "5rem", height: "7.5rem" }}>
                 {selected.coverUrl ? <img src={selected.coverUrl} alt="" /> : "EPUB"}
