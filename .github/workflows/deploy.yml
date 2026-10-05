@@ -35,7 +35,7 @@ jobs:
           pip install pymupdf
 
       - name: 4. 执行图书预处理脚本
-        run: python build_library.py
+        run: python audit_library.py
 
       - name: 5. 配置 Node.js 环境
         uses: actions/setup-node@v4
@@ -44,7 +44,7 @@ jobs:
           cache: 'npm'
 
       - name: 6. 安装前端依赖
-        run: npm ci
+        run: npm install
 
       - name: 7. 构建 Vite 前端静态页面
         run: npm run build
