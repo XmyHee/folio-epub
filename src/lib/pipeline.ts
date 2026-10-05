@@ -216,7 +216,8 @@ export function runPipeline(
     byKey.set(book.bookKey, list);
   }
   for (const [key, members] of byKey) {
-    if (members.length < 2) continue;
+    // Ignore ultra-short/empty keys (legacy CJK collapse)
+    if (members.length < 2 || !key || key.length < 4) continue;
     const groupId = `title:${key}`;
     groups.push(
       markGroup(members, groupId, "title", key, keepOverrides, "归一化书名与作者相同", false),

@@ -40,8 +40,14 @@ export function hasZlibTag(name: string): boolean {
   return /z-library/i.test(name);
 }
 
+/**
+ * Stable key chars: Latin, digits, and CJK (Chinese titles were previously
+ * stripped to empty — causing unrelated books to share one bookKey).
+ */
 export function alnumKey(text: string): string {
-  return text.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\uac00-\ud7af]+/gi, "");
 }
 
 export function cleanKeyText(text: string | undefined | null): string {
@@ -141,12 +147,24 @@ export function sanitizeVsiTitle(
 
 
 export function titleTokens(title: string): string[] {
-  const cleaned = stripVsiSuffix(stripZlibTag(title || ""))
+  const raw = stripVsiSuffix(stripZlibTag(title || ""));
+  // Latin words
+  const latin = raw
     .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ");
-  return cleaned
+    .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
     .filter((t) => t.length > 1 && !STOP_TITLE_WORDS.has(t));
+  if (latin.length > 0) return latin;
+
+  // CJK: character bigrams (unigrams alone collide too often)
+  const cjk = raw.replace(/[^\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\uac00-\ud7af]/g, "");
+  if (cjk.length >= 2) {
+    const grams: string[] = [];
+    for (let i = 0; i < cjk.length - 1; i++) grams.push(cjk.slice(i, i + 2));
+    return grams.length ? grams : [cjk];
+  }
+  if (cjk.length === 1) return [cjk];
+  return [];
 }
 
 export function titleTokenSet(title: string): Set<string> {
@@ -158,6 +176,8 @@ export function titleSimilarity(a: string, b: string): number {
   const sa = titleTokenSet(a);
   const sb = titleTokenSet(b);
   if (sa.size === 0 || sb.size === 0) return 0;
+  // Too short CJK/latin keys are unreliable for fuzzy match
+  if (sa.size < 2 || sb.size < 2) return 0;
   let inter = 0;
   for (const t of sa) if (sb.has(t)) inter += 1;
   const union = sa.size + sb.size - inter;
@@ -273,9 +293,13 @@ export function proposeFilename(
     cleanKeyText(titleWithoutVolume(title || originalName)) || cleanKeyText(originalName);
   const keyAuthor = cleanKeyText(displayAuthor === "Unknown" ? "" : displayAuthor);
   const vol = extractVolumeKey(title, originalName);
-  const base = keyAuthor
-    ? keyTitle + "_" + keyAuthor
-    : keyTitle || "file_" + alnumKey(originalName);
+  // Unique fallback: never collapse different files into one empty key
+  const fallback = "file_" + alnumKey(originalName) || "file_" + originalName.length;
+  let base: string;
+  if (keyTitle && keyAuthor) base = keyTitle + "_" + keyAuthor;
+  else if (keyTitle) base = keyTitle + "_" + (keyAuthor || fallback);
+  else if (keyAuthor) base = fallback + "_" + keyAuthor;
+  else base = fallback;
   const bookKey = vol ? base + "_v" + vol : base;
   return { cleanTitle, displayAuthor, proposedName, bookKey };
 }
