@@ -4,7 +4,7 @@ import { fileURLToPath, URL } from "node:url";
 
 export default defineConfig({
   plugins: [react()],
-  base: "/folio-epub/",
+  base: "/folio-library/", // 
   resolve: {
     alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
   },
