@@ -1,9 +1,9 @@
-name: Deploy Folio to GitHub Pages
+name: Deploy Folio Library to GitHub Pages
 
 on:
   push:
-    branches:
-      - main  
+    branches: ["main"]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -15,32 +15,48 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-deploy:
+  deploy:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: 1. 拉取代码
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: 2. 配置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 3. 安装 Python 依赖 (PyMuPDF)
+        run: |
+          python -m pip install --upgrade pip
+          pip install pymupdf
+
+      - name: 4. 执行图书预处理脚本
+        run: python build_library.py
+
+      - name: 5. 配置 Node.js 环境
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: 'npm'
 
-      - name: Install dependencies
+      - name: 6. 安装前端依赖
         run: npm ci
 
-      - name: Build project
+      - name: 7. 构建 Vite 前端静态页面
         run: npm run build
 
-      - name: Upload artifact
+      - name: 8. 配置 GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: 9. 上传产物
         uses: actions/upload-pages-artifact@v3
         with:
-          path: './dist'  
+          path: './dist'
 
-      - name: Deploy to GitHub Pages
+      - name: 10. 部署至 GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
