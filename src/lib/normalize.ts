@@ -216,17 +216,23 @@ export function proposeFilename(
   originalName: string,
   mode: NamingMode,
 ): { cleanTitle: string; displayAuthor: string; proposedName: string; bookKey: string } {
-  const fallbackTitle = stripVsiSuffix(stripZlibTag(originalName.replace(/\.epub$/i, "")));
+  const extMatch = originalName.match(/\.(epub|pdf)$/i);
+  const ext = extMatch ? extMatch[0]!.toLowerCase() : ".epub";
+  const fallbackTitle = stripVsiSuffix(
+    stripZlibTag(originalName.replace(/\.(epub|pdf)$/i, "")),
+  );
   const cleanTitle =
     sanitizeVsiTitle(title, mode) || sanitizeFilenamePart(fallbackTitle) || "Untitled";
   const displayAuthor = joinAuthors(authors);
-  const proposedName = `${cleanTitle} - ${sanitizeFilenamePart(displayAuthor)}.epub`;
-  const keyTitle = cleanKeyText(titleWithoutVolume(title || originalName)) || cleanKeyText(originalName);
+  const proposedName =
+    cleanTitle + " - " + sanitizeFilenamePart(displayAuthor) + ext;
+  const keyTitle =
+    cleanKeyText(titleWithoutVolume(title || originalName)) || cleanKeyText(originalName);
   const keyAuthor = cleanKeyText(displayAuthor === "Unknown" ? "" : displayAuthor);
   const vol = extractVolumeKey(title, originalName);
   const base = keyAuthor
     ? keyTitle + "_" + keyAuthor
-    : keyTitle || ("file_" + alnumKey(originalName));
+    : keyTitle || "file_" + alnumKey(originalName);
   const bookKey = vol ? base + "_v" + vol : base;
   return { cleanTitle, displayAuthor, proposedName, bookKey };
 }

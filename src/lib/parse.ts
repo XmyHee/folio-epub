@@ -1,11 +1,6 @@
 import JSZip from "jszip";
-import { hasZlibTag } from "./normalize";
+import { hasZlibTag, primaryIsbn } from "./normalize";
 import type { ParsedBook } from "./types";
-
-/** Skip embedding covers larger than this (saves RAM on huge image assets) */
-const MAX_COVER_BYTES = 2 * 1024 * 1024;
-/** Soft per-file warning threshold */
-const LARGE_FILE_BYTES = 80 * 1024 * 1024;
 
 function uid(): string {
   return crypto.randomUUID();
@@ -42,7 +37,7 @@ function dirname(path: string): string {
 function joinPath(base: string, rel: string): string {
   const cleaned = rel.replace(/\\/g, "/");
   if (!base) return cleaned.replace(/^\.\//, "");
-  const parts = (base + "/" + cleaned).split("/");
+  const parts = `${base}/${cleaned}`.split("/");
   const out: string[] = [];
   for (const p of parts) {
     if (!p || p === ".") continue;
@@ -117,11 +112,6 @@ function findCoverPath(opf: Document, opfDir: string, metas: Element[]): string 
   return null;
 }
 
-function isOomError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return /array buffer allocation failed|out of memory|oom/i.test(msg);
-}
-
 export async function parseEpub(file: File): Promise<ParsedBook> {
   const id = uid();
   const originalName = file.name;
@@ -148,19 +138,13 @@ export async function parseEpub(file: File): Promise<ParsedBook> {
     series: "",
     spineCount: 0,
     hasZlibTag: zlib,
+    kind: "epub",
   };
 
-  let buffer: ArrayBuffer | null = null;
-
   try {
-    // Single read — hash + unzip share the same buffer (avoids 2× RAM)
-    buffer = await file.arrayBuffer();
+    const buffer = await file.arrayBuffer();
     base.hash = await sha256Hex(buffer);
-
     const zip = await JSZip.loadAsync(buffer);
-    // Allow GC of the raw buffer reference once JSZip has parsed central directory
-    buffer = null;
-
     const containerFile =
       zip.file("META-INF/container.xml") || zip.file("meta-inf/container.xml");
     if (!containerFile) throw new Error("缺少 META-INF/container.xml，不是标准 EPUB");
@@ -171,7 +155,7 @@ export async function parseEpub(file: File): Promise<ParsedBook> {
     if (!opfPath) throw new Error("container.xml 未声明 OPF 路径");
 
     const opfFile = zip.file(opfPath);
-    if (!opfFile) throw new Error("找不到 OPF 文件: " + opfPath);
+    if (!opfFile) throw new Error(`找不到 OPF 文件: ${opfPath}`);
     const opf = parseXml(await opfFile.async("string"));
     const opfDir = dirname(opfPath);
 
@@ -180,6 +164,7 @@ export async function parseEpub(file: File): Promise<ParsedBook> {
     base.publisher = byLocal(opf, "publisher").map(textOf).filter(Boolean)[0] ?? "";
     base.language = byLocal(opf, "language").map(textOf).filter(Boolean)[0] ?? "";
     base.identifiers = byLocal(opf, "identifier").map(textOf).filter(Boolean);
+    base.isbn = primaryIsbn(base.identifiers);
     base.description = byLocal(opf, "description").map(textOf).filter(Boolean)[0] ?? "";
     base.date = (byLocal(opf, "date").map(textOf).filter(Boolean)[0] ?? "").slice(0, 10);
     base.subjects = byLocal(opf, "subject").map(textOf).filter(Boolean);
@@ -199,16 +184,9 @@ export async function parseEpub(file: File): Promise<ParsedBook> {
     if (coverPath) {
       const coverFile = zip.file(coverPath);
       if (coverFile) {
-        // Avoid loading multi‑MB covers into memory as object URLs for every book
-        const approx = (coverFile as JSZip.JSZipObject & { _data?: { uncompressedSize?: number } })
-          ._data?.uncompressedSize;
-        if (approx == null || approx <= MAX_COVER_BYTES) {
-          const blob = await coverFile.async("blob");
-          if (blob.size <= MAX_COVER_BYTES) {
-            const typed = new Blob([blob], { type: guessImageType(coverPath, blob) });
-            base.coverUrl = URL.createObjectURL(typed);
-          }
-        }
+        const blob = await coverFile.async("blob");
+        const typed = new Blob([blob], { type: guessImageType(coverPath, blob) });
+        base.coverUrl = URL.createObjectURL(typed);
       }
     }
 
@@ -218,42 +196,30 @@ export async function parseEpub(file: File): Promise<ParsedBook> {
     }
     return base;
   } catch (err) {
-    buffer = null;
     if (!base.hash) {
-      base.hash = "fallback-" + id;
+      try {
+        base.hash = await sha256Hex(await file.arrayBuffer());
+      } catch {
+        base.hash = `fallback-${id}`;
+      }
     }
-    const oom = isOomError(err);
     return {
       ...base,
       status: "error",
-      error: oom
-        ? "内存不足，无法解析此文件（请减少同时处理的数量，或分批导入）"
-        : err instanceof Error
-          ? err.message
-          : "读取解析失败",
+      error: err instanceof Error ? err.message : "读取解析失败",
     };
   }
-}
-
-/** Choose concurrency from library size to reduce peak RAM */
-export function suggestConcurrency(files: File[]): number {
-  const totalBytes = files.reduce((s, f) => s + f.size, 0);
-  const maxFile = files.reduce((m, f) => Math.max(m, f.size), 0);
-  if (maxFile >= LARGE_FILE_BYTES || totalBytes >= 500 * 1024 * 1024) return 1;
-  if (files.length > 80 || totalBytes >= 200 * 1024 * 1024) return 2;
-  return 2; // was 4 — safer default for browser tabs
 }
 
 export async function parseEpubBatch(
   files: File[],
   onProgress: (done: number, total: number, current: string) => void,
-  concurrency?: number,
+  concurrency = 2,
 ): Promise<ParsedBook[]> {
   const total = files.length;
   const results: ParsedBook[] = new Array(total);
   let next = 0;
   let done = 0;
-  const limit = concurrency ?? suggestConcurrency(files);
 
   async function worker() {
     while (true) {
@@ -261,43 +227,16 @@ export async function parseEpubBatch(
       if (i >= total) return;
       const file = files[i]!;
       onProgress(done, total, file.name);
-      try {
-        results[i] = await parseEpub(file);
-      } catch (err) {
-        results[i] = {
-          id: uid(),
-          file,
-          originalName: file.name,
-          relativePath: relativePathOf(file),
-          size: file.size,
-          hash: "fallback-" + i,
-          status: "error",
-          error: isOomError(err)
-            ? "内存不足，无法解析此文件（请分批导入）"
-            : err instanceof Error
-              ? err.message
-              : "读取解析失败",
-          rawTitle: "",
-          authors: [],
-          publisher: "",
-          language: "",
-          identifiers: [],
-          description: "",
-          date: "",
-          subjects: [],
-          series: "",
-          spineCount: 0,
-          hasZlibTag: hasZlibTag(file.name),
-        };
-      }
+      results[i] = await parseBook(file);
       done += 1;
       onProgress(done, total, file.name);
-      // Yield to the browser so GC can run between books
       await new Promise((r) => setTimeout(r, 0));
     }
   }
 
-  await Promise.all(Array.from({ length: Math.min(limit, Math.max(total, 1)) }, () => worker()));
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, Math.max(total, 1)) }, () => worker()),
+  );
   return results;
 }
 
@@ -305,4 +244,131 @@ export function revokeCovers(books: ParsedBook[]) {
   for (const book of books) {
     if (book.coverUrl) URL.revokeObjectURL(book.coverUrl);
   }
+}
+
+
+/** Read first chunk of a PDF and pull Info dict Title/Author + ISBN-like strings */
+export async function parsePdf(file: File): Promise<ParsedBook> {
+  const id = crypto.randomUUID();
+  const originalName = file.name;
+  const relativePath =
+    (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+
+  const base: ParsedBook = {
+    id,
+    file,
+    originalName,
+    relativePath,
+    size: file.size,
+    hash: "",
+    status: "ok",
+    rawTitle: "",
+    authors: [],
+    publisher: "",
+    language: "",
+    identifiers: [],
+    description: "",
+    date: "",
+    subjects: [],
+    series: "",
+    spineCount: 0,
+    hasZlibTag: /z-library/i.test(originalName),
+    kind: "pdf",
+  };
+
+  try {
+    const slice = file.slice(0, Math.min(file.size, 512 * 1024));
+    const buffer = await slice.arrayBuffer();
+    // Hash only the slice for speed? Better hash full file for dedupe — use full when small
+    if (file.size <= 32 * 1024 * 1024) {
+      const full = await file.arrayBuffer();
+      const digest = await crypto.subtle.digest("SHA-256", full);
+      base.hash = Array.from(new Uint8Array(digest))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+    } else {
+      const digest = await crypto.subtle.digest("SHA-256", buffer);
+      base.hash =
+        "partial-" +
+        Array.from(new Uint8Array(digest))
+          .map((b) => b.toString(16).padStart(2, "0"))
+          .join("");
+    }
+
+    // Binary to latin1 string for PDF Info regex (UTF-16 titles handled loosely)
+    const bytes = new Uint8Array(buffer);
+    let text = "";
+    for (let i = 0; i < bytes.length; i++) text += String.fromCharCode(bytes[i]!);
+
+    const titleM = text.match(/\/Title\s*\(([^\)]*)\)/i) || text.match(/\/Title\s*<([0-9A-Fa-f]+)>/);
+    const authorM = text.match(/\/Author\s*\(([^\)]*)\)/i);
+    if (titleM?.[1]) base.rawTitle = decodePdfString(titleM[1]);
+    if (authorM?.[1]) base.authors = [decodePdfString(authorM[1])].filter(Boolean);
+
+    const isbnHits = text.match(/(?:97[89][-\s]?\d{10}|\d{9}[\dXx])/g) || [];
+    base.identifiers = [...new Set(isbnHits.map((x) => x.replace(/[\s-]/g, "")))];
+    base.isbn = primaryIsbn(base.identifiers);
+
+    if (!base.rawTitle && base.authors.length === 0) {
+      // Not fatal — tier 3 filename will fill in
+      base.status = "ok";
+    }
+    return base;
+  } catch (err) {
+    return {
+      ...base,
+      status: "error",
+      error: err instanceof Error ? err.message : "PDF 读取失败",
+      hash: base.hash || "fallback-" + id,
+    };
+  }
+}
+
+function decodePdfString(s: string): string {
+  // Basic PDF octal escapes \nnn
+  let out = s.replace(/\\(\d{1,3})/g, (_, n) => String.fromCharCode(parseInt(n, 8)));
+  out = out.replace(/\\n/g, " ").replace(/\\r/g, " ");
+  try {
+    // UTF-16BE BOM often used in PDF strings
+    if (out.charCodeAt(0) === 0xfeff || (out.length > 2 && out.charCodeAt(0) === 0)) {
+      const cleaned = out.replace(/\0/g, "");
+      return cleaned.trim();
+    }
+  } catch {
+    /* ignore */
+  }
+  return out.replace(/\s+/g, " ").trim();
+}
+
+export async function parseBook(file: File): Promise<ParsedBook> {
+  const name = file.name.toLowerCase();
+  if (name.endsWith(".pdf")) return parsePdf(file);
+  if (name.endsWith(".epub")) {
+    const book = await parseEpub(file);
+    book.kind = "epub";
+    return book;
+  }
+  // Unsupported — still try filename path later
+  return {
+    id: crypto.randomUUID(),
+    file,
+    originalName: file.name,
+    relativePath: file.name,
+    size: file.size,
+    hash: "unsupported",
+    status: "error",
+    error: "仅支持 EPUB / PDF",
+    rawTitle: "",
+    authors: [],
+    publisher: "",
+    language: "",
+    identifiers: [],
+    description: "",
+    date: "",
+    subjects: [],
+    series: "",
+    spineCount: 0,
+    hasZlibTag: false,
+    kind: "other",
+  };
 }

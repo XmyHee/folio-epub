@@ -2,6 +2,8 @@ import { useMemo, useRef, useState, type DragEvent } from "react";
 import { downloadCsv, downloadLibraryZip } from "./lib/export";
 import { filesFromDataTransfer, filesFromInput, formatBytes } from "./lib/files";
 import { parseEpubBatch, revokeCovers } from "./lib/parse";
+import { lookupIsbnBatch } from "./lib/openlibrary";
+import { primaryIsbn } from "./lib/normalize";
 import { runPipeline } from "./lib/pipeline";
 import type { DerivedBook, NamingMode, ParsedBook } from "./lib/types";
 
@@ -23,8 +25,11 @@ function Cover({ src }: { src?: string }) {
 export default function App() {
   const [books, setBooks] = useState<ParsedBook[]>([]);
   const [namingMode, setNamingMode] = useState<NamingMode>(1);
+  const [useOnlineMeta, setUseOnlineMeta] = useState(true);
+  const [olProgress, setOlProgress] = useState<string | null>(null);
   const [includeDuplicates, setIncludeDuplicates] = useState(true);
   const [keepOverrides, setKeepOverrides] = useState<Record<string, string>>({});
+  const [olByIsbn, setOlByIsbn] = useState<Map<string, import("./lib/openlibrary").OpenLibraryHit>>(new Map());
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number; current: string } | null>(
     null,
@@ -56,23 +61,17 @@ export default function App() {
 
   const renameBooks = filtered.filter((b) => b.role === "unique" || b.role === "keep");
 
-  async function ingest(files: File[]) {
+    async function ingest(files: File[]) {
     if (files.length === 0) {
-      setError("没有找到 EPUB 文件");
+      setError("没有找到 EPUB / PDF 文件");
       return;
-    }
-    const totalMb = Math.round(files.reduce((s, f) => s + f.size, 0) / (1024 * 1024));
-    if (totalMb > 400) {
-      setError(
-        "本次合计约 " +
-          totalMb +
-          " MB，浏览器可能内存不足。建议每次不超过 100～200 本，或先分文件夹导入。",
-      );
     }
     revokeCovers(books);
     setBusy(true);
-    if (totalMb <= 400) setError(null);
+    setError(null);
+    setOlProgress(null);
     setBooks([]);
+    setOlByIsbn(new Map());
     setKeepOverrides({});
     setSelected(null);
     setProgress({ done: 0, total: files.length, current: files[0]?.name ?? "" });
@@ -80,25 +79,39 @@ export default function App() {
       const parsed = await parseEpubBatch(files, (done, total, current) => {
         setProgress({ done, total, current });
       });
+
+      // Tier-1 prep: collect ISBNs and optionally query Open Library
+      if (useOnlineMeta) {
+        const isbns = parsed
+          .map((b) => b.isbn || primaryIsbn(b.identifiers) || "")
+          .filter(Boolean);
+        if (isbns.length > 0) {
+          setOlProgress("Open Library 查询中…");
+          try {
+            const hits = await lookupIsbnBatch(isbns, (done, total) => {
+              setOlProgress("Open Library " + done + "/" + total);
+            });
+            setOlByIsbn(hits);
+          } catch {
+            // offline / blocked — silent fallback to tier 2/3
+          }
+          setOlProgress(null);
+        }
+      }
+
       setBooks(parsed);
       setTab("audit");
-      const oomCount = parsed.filter((b) => b.error && /内存不足/.test(b.error)).length;
-      if (oomCount > 0) {
-        setError(
-          oomCount +
-            " 本因内存不足未能解析。请关闭其他标签页后分批导入，或先导出已成功的部分。",
-        );
-      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "解析失败";
       setError(
         /array buffer|内存|oom/i.test(msg)
-          ? "浏览器内存不足（Array buffer allocation failed）。请分批导入，每次少选一些书。"
+          ? "浏览器内存不足。请分批导入，每次少选一些书。"
           : msg,
       );
     } finally {
       setBusy(false);
       setProgress(null);
+      setOlProgress(null);
     }
   }
 
@@ -185,7 +198,7 @@ export default function App() {
           <input
             ref={fileRef}
             type="file"
-            accept=".epub,application/epub+zip"
+            accept=".epub,.pdf,application/epub+zip,application/pdf"
             multiple
             className="hidden-input"
             onChange={(e) => {
@@ -345,7 +358,20 @@ export default function App() {
                       <Cover src={book.coverUrl} />
                       <div style={{ minWidth: 0, flex: 1 }}>
                         <div style={{ fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {book.rawTitle || "【缺失书名】"}
+                          {book.resolvedTitle || book.rawTitle || "【缺失书名】"}
+                          {book.metaSource ? (
+                            <span className="badge" style={{ marginLeft: 6, fontSize: "0.7rem" }}>
+                              {book.metaSource === "openlibrary"
+                                ? "OL"
+                                : book.metaSource === "epub"
+                                  ? "EPUB"
+                                  : book.metaSource === "pdf"
+                                    ? "PDF"
+                                    : book.metaSource === "filename"
+                                      ? "文件名"
+                                      : ""}
+                            </span>
+                          ) : null}
                         </div>
                         <div style={{ fontSize: "0.8rem", color: "var(--muted)" }}>
                           {book.displayAuthor}

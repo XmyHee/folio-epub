@@ -7,6 +7,9 @@ import {
   titleSimilarity,
   titleWithoutVolume,
 } from "./normalize";
+import { resolveBookMeta } from "./resolve";
+import type { OpenLibraryHit } from "./openlibrary";
+
 import type {
   DerivedBook,
   DuplicateGroup,
@@ -115,17 +118,36 @@ export function runPipeline(
   books: ParsedBook[],
   mode: NamingMode,
   keepOverrides: Record<string, string> = {},
+  opts: {
+    online?: boolean;
+    olByIsbn?: Map<string, OpenLibraryHit>;
+  } = {},
 ): PipelineResult {
   const derived: DerivedBook[] = books.map((book) => {
-    const naming = proposeFilename(book.rawTitle, book.authors, book.originalName, mode);
+    const resolved = resolveBookMeta(book, {
+      online: opts.online,
+      olByIsbn: opts.olByIsbn,
+    });
+    const naming = proposeFilename(
+      resolved.title,
+      resolved.authors,
+      book.originalName,
+      mode,
+    );
     return {
       ...book,
       ...naming,
+      rawTitle: resolved.title || book.rawTitle,
+      authors: resolved.authors.length ? resolved.authors : book.authors,
+      publisher: resolved.publisher || book.publisher,
+      isbn: resolved.isbn,
+      resolvedTitle: resolved.title,
+      resolvedAuthors: resolved.authors,
+      metaSource: resolved.source,
       groupId: null,
       role: "unique" as const,
       score: scoreBook(book),
       nameChanged: false,
-      isbn: primaryIsbn(book.identifiers),
     };
   });
 
@@ -265,6 +287,9 @@ export function runPipeline(
       duplicateGroups: groups.length,
       toIsolate: derived.filter((b) => b.role === "duplicate" || b.role === "identical").length,
       exactCopies: derived.filter((b) => b.role === "identical").length,
+      fromOpenLibrary: derived.filter((b) => b.metaSource === "openlibrary").length,
+      fromInternal: derived.filter((b) => b.metaSource === "epub" || b.metaSource === "pdf").length,
+      fromFilename: derived.filter((b) => b.metaSource === "filename").length,
     },
   };
 }

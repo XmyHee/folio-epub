@@ -2,6 +2,8 @@ export type ParseStatus = "ok" | "error";
 export type NamingMode = 1 | 2;
 export type DedupeRole = "unique" | "keep" | "duplicate" | "identical";
 export type DedupeKind = "hash" | "isbn" | "title" | "fuzzy";
+/** Where the final display title/author came from */
+export type MetaSource = "openlibrary" | "epub" | "pdf" | "filename" | "none";
 
 export type ParsedBook = {
   id: string;
@@ -12,6 +14,7 @@ export type ParsedBook = {
   hash: string;
   status: ParseStatus;
   error?: string;
+  /** Internal EPUB/PDF raw title (may be empty) */
   rawTitle: string;
   authors: string[];
   publisher: string;
@@ -24,6 +27,13 @@ export type ParsedBook = {
   coverUrl?: string;
   spineCount: number;
   hasZlibTag: boolean;
+  /** Resolved ISBN-13/10 if any */
+  isbn?: string | null;
+  /** Final title used for naming after 3-tier resolve */
+  resolvedTitle?: string;
+  resolvedAuthors?: string[];
+  metaSource?: MetaSource;
+  kind?: "epub" | "pdf" | "other";
 };
 
 export type DerivedBook = ParsedBook & {
@@ -35,7 +45,6 @@ export type DerivedBook = ParsedBook & {
   role: DedupeRole;
   score: number;
   nameChanged: boolean;
-  isbn?: string | null;
 };
 
 export type DuplicateGroup = {
@@ -58,5 +67,8 @@ export type PipelineResult = {
     duplicateGroups: number;
     toIsolate: number;
     exactCopies: number;
+    fromOpenLibrary: number;
+    fromInternal: number;
+    fromFilename: number;
   };
 };
